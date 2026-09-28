@@ -1,0 +1,106 @@
+# CI/CD: test → build → (chỉ khi cả hai xanh, chỉ trên main) deploy lên Render
+#
+# Secret / variable cần tạo ở repo → Settings → Secrets and variables → Actions:
+#   - Secret   RENDER_DEPLOY_HOOK_URL : Render → day12-agent → Settings → Deploy Hook
+#   - Variable PUBLIC_URL (tùy chọn)  : mặc định https://day12-agent-1yrr.onrender.com
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Hai lần push liên tiếp → hủy lần chạy cũ, không deploy chồng lên nhau
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (CP1–CP4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Bỏ test_cp5 (gọi vào bản deploy sống) và test_bonus_cicd (tự kiểm tra
+      # badge của chính workflow này). Test build Docker để job `build` lo.
+      - name: Run pytest
+        env:
+          AGENT_API_KEY: ci-dummy
+          REDIS_URL: "fake://"
+        run: >
+          pytest tests/ -v -m "not docker"
+          --ignore=tests/test_cp5.py
+          --ignore=tests/test_bonus_cicd.py
+
+  build:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t day12-agent:ci .
+
+      - name: Show image size
+        run: docker images day12-agent:ci
+
+      # Build xong chưa đủ — chạy thử container và gọi /health
+      - name: Container smoke test
+        run: |
+          docker run -d --name agent -p 8000:8000 \
+            -e AGENT_API_KEY=ci-dummy -e REDIS_URL=fake:// day12-agent:ci
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost:8000/health; then echo; exit 0; fi
+            sleep 1
+          done
+          docker logs agent
+          exit 1
+
+  deploy:
+    name: Deploy to Render
+    needs: [test, build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.PUBLIC_URL || 'https://day12-agent-1yrr.onrender.com' }}
+    steps:
+      - name: Trigger Render deploy hook
+        env:
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "::error::Chưa tạo secret RENDER_DEPLOY_HOOK_URL"
+            exit 1
+          fi
+          curl -fsS -X POST "$DEPLOY_HOOK" > /dev/null
+          echo "Đã gửi yêu cầu deploy commit ${GITHUB_SHA::7} tới Render"
+
+      # Free tier build + khởi động mất vài phút → thử lại tối đa ~6 phút
+      - name: Smoke test
+        env:
+          PUBLIC_URL: ${{ vars.PUBLIC_URL || 'https://day12-agent-1yrr.onrender.com' }}
+        run: |
+          sleep 45
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 60 "$PUBLIC_URL/health" \
+               && curl -fsS --max-time 30 "$PUBLIC_URL/ready"; then
+              echo; echo "Service sống: $PUBLIC_URL"; exit 0
+            fi
+            echo " ...chưa sẵn sàng, thử lại ($i/20)"; sleep 15
+          done
+          exit 1

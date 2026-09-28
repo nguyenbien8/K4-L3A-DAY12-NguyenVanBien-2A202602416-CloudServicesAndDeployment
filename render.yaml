@@ -11,6 +11,8 @@ services:
     plan: free
     region: singapore
     healthCheckPath: /health
+    # Deploy chỉ đi qua GitHub Actions (deploy hook) SAU KHI test + build xanh
+    autoDeploy: false
     envVars:
       - key: AGENT_API_KEY
         sync: false

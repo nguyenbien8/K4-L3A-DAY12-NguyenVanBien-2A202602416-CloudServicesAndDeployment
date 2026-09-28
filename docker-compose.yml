@@ -38,8 +38,10 @@ services:
   agent:
     build: .
     image: day12-agent:prod
-    ports:
-      - "8000:8000"
+    # Không publish cổng ra host: nhiều replica không thể cùng chiếm 8000.
+    # Traffic từ ngoài vào qua nginx (localhost:8000) → round-robin tới agent.
+    expose:
+      - "8000"
     environment:
       AGENT_API_KEY: ${AGENT_API_KEY}   # đọc từ .env, KHÔNG viết thẳng khóa
       REDIS_URL: redis://redis:6379/0   # `redis` là tên service = hostname
@@ -55,6 +57,20 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    restart: unless-stopped
+
+  # Load balancer: `docker compose up -d --scale agent=3`
+  # Nginx resolve hostname `agent` lúc khởi động → nếu scale SAU khi nginx đã
+  # chạy thì `docker compose restart nginx` để nó thấy replica mới.
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      agent:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

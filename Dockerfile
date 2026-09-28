@@ -48,4 +48,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8000') + '/health', timeout=4).read()" || exit 1
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# `exec` để uvicorn THAY THẾ sh và trở thành PID 1 → nhận SIGTERM trực tiếp.
+# Thiếu exec: sh làm PID 1, không chuyển tín hiệu → graceful shutdown không
+# chạy, container bị SIGKILL sau timeout.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
